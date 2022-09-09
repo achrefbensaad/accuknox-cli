@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	disable        []string
+	skip           []string
 	namespace      string
 	installOptions ki.Options
 	params         = ci.Parameters{Writer: os.Stdout}
@@ -31,7 +31,7 @@ const (
 	encryptionWireguard = "wireguard"
 )
 
-func validateDisableFlagInput(in []string) error {
+func validateSkipFlagInput(in []string) error {
 	var err error
 
 	type void struct{}
@@ -41,7 +41,7 @@ func validateDisableFlagInput(in []string) error {
 
 	for _, a := range in {
 		if _, ok := flagInputSet[a]; !ok {
-			err = fmt.Errorf("❌ invalid input %q for disable flag | run  $ accuknox install --help for more", a)
+			err = fmt.Errorf("❌ invalid input %q for skip flag | run  $ accuknox install --help for more", a)
 			break
 		}
 	}
@@ -56,14 +56,14 @@ var installCmd = &cobra.Command{
 	Long:  `Install KubeArmor, Cilium and Discovery-engine in a Kubernetes Clusters`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 
-		//validate disable flag input
-		err := validateDisableFlagInput(disable)
+		//validate skip flag input
+		err := validateSkipFlagInput(skip)
 
 		if err != nil {
 			return err
 		}
 
-		if !slices.Contains(disable, "cilium") {
+		if !slices.Contains(skip, "cilium") {
 			// Install Cilium
 			params.Namespace = namespace
 			installer, err := ci.NewK8sInstaller(k8sClient, params)
@@ -89,7 +89,7 @@ var installCmd = &cobra.Command{
 			}
 		}
 
-		if !slices.Contains(disable, "kubearmor") {
+		if !slices.Contains(skip, "kubearmor") {
 			// Install KubeArmor
 			installOptions.Namespace = namespace
 			if err := ki.K8sInstaller(client, installOptions); err != nil {
@@ -97,7 +97,7 @@ var installCmd = &cobra.Command{
 			}
 		}
 
-		if !slices.Contains(disable, "discoveryengine") {
+		if !slices.Contains(skip, "discoveryengine") {
 			// Install MySQL DB
 			installOptions.Namespace = namespace
 			/* disabling mysql since discovery-engine now uses sqlite3
@@ -120,8 +120,8 @@ var installCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(installCmd)
 
-	// disable flag
-	installCmd.Flags().StringSliceVarP(&disable, "disable", "d", []string{}, "disable installing a program { cilium | kubearmor | discoveryengine }")
+	// skip flag
+	installCmd.Flags().StringSliceVarP(&skip, "skip", "s", []string{}, "skip installing a program { cilium | kubearmor | discoveryengine }")
 
 	//kubearmor
 	installCmd.Flags().StringVarP(&installOptions.KubearmorImage, "image", "i", "kubearmor/kubearmor:stable", "Kubearmor daemonset image to use")
