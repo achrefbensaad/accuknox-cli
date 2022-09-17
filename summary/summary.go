@@ -6,26 +6,30 @@ package summary
 import (
 	"context"
 	"errors"
-	"fmt"
-	"io"
 	"os"
-	"strings"
-	"time"
 
 	opb "github.com/accuknox/auto-policy-discovery/src/protobuf/v1/observability"
-	"github.com/fatih/color"
+	"github.com/kubearmor/kubearmor-client/summary"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Options Structure
 type Options struct {
-	GRPC      string
-	Labels    string
-	Namespace string
+	GRPC          string
+	Labels        string
+	Namespace     string
+	PodName       string
+	ClusterName   string
+	ContainerName string
+	Type          string
+	RevDNSLookup  bool
+	Aggregation   bool
 }
 
 // StartSummary : Get summary on observability data
 func StartSummary(o Options) error {
+
 	gRPC := ""
 
 	if o.GRPC != "" {
@@ -38,107 +42,59 @@ func StartSummary(o Options) error {
 		}
 	}
 
-	data := &opb.LogsRequest{
-		Label:     o.Labels,
-		Namespace: o.Namespace,
+	data := &opb.Request{
+		Label:         o.Labels,
+		NameSpace:     o.Namespace,
+		PodName:       o.PodName,
+		ClusterName:   o.ClusterName,
+		ContainerName: o.ContainerName,
+		Aggregate:     o.Aggregation,
 	}
 
 	// create a client
-	conn, err := grpc.Dial(gRPC, grpc.WithInsecure())
+	conn, err := grpc.Dial(gRPC, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	client := opb.NewSummaryClient(conn)
+	client := opb.NewObservabilityClient(conn)
 
-	//Fetch Summary Logs
-	stream, err := client.FetchLogs(context.Background(), data)
-	if err != nil {
-		return errors.New("could not connect to the server. Possible troubleshooting:\n- Check if discovery engine is running\n- Create a portforward to discovery engine service using\n\t\033[1mkubectl port-forward -n explorer service/knoxautopolicy --address 0.0.0.0 --address :: 9089:9089\033[0m")
-	}
-
-	headerFmt := color.New(color.Underline).SprintfFunc()
-	for {
-		res, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
+	if data.PodName != "" {
+		sumResp, err := client.Summary(context.Background(), &opb.Request{
+			PodName:   data.PodName,
+			Type:      o.Type,
+			Aggregate: o.Aggregation,
+		})
 		if err != nil {
 			return err
 		}
-		fmt.Println("\n\n**********************************************************************")
-		fmt.Println("\nPod Name : ", res.PodDetail)
-		fmt.Println("\nNamespace : ", res.Namespace)
-		//Print List of Processes
-		fmt.Println("\nList of Processes (" + fmt.Sprint(len(res.ListOfProcess)) + ") :\n")
-		tbl := Heading("SOURCE", "DESTINATION", "COUNT", "LAST UPDATED TIME", "STATUS")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, process := range res.ListOfProcess {
-			for _, source := range process.ListOfDestination {
-				tbl.AddRow(process.Source, source.Destination, source.Count, time.Unix(source.LastUpdatedTime, 0).Format("1-02-2006 15:04:05"), strings.ToUpper(source.Status))
+		summary.DisplaySummaryOutput(sumResp, o.RevDNSLookup, o.Type)
+
+	} else {
+		//Fetch Summary Logs
+		podNameResp, err := client.GetPodNames(context.Background(), data)
+		if err != nil {
+			return errors.New("could not connect to the server. Possible troubleshooting:\n- Check if discovery engine is running\n- Create a portforward to discovery engine service using\n\t\033[1mkubectl port-forward -n explorer service/knoxautopolicy --address 0.0.0.0 --address :: 9089:9089\033[0m")
+		}
+
+		for _, podname := range podNameResp.PodName {
+			if podname == "" {
+				continue
 			}
-		}
-		tbl.Print()
 
-		//Print List of File System
-		fmt.Println("\nList of File-system accesses (" + fmt.Sprint(len(res.ListOfFile)) + ") :\n")
-		tbl = Heading("SOURCE", "DESTINATION", "COUNT", "LAST UPDATED TIME", "STATUS")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, file := range res.ListOfFile {
-			for _, source := range file.ListOfDestination {
-				tbl.AddRow(file.Source, source.Destination, source.Count, time.Unix(source.LastUpdatedTime, 0).Format("1-02-2006 15:04:05"), strings.ToUpper(source.Status))
+			sumResp, err := client.Summary(context.Background(), &opb.Request{
+				PodName:   podname,
+				Type:      o.Type,
+				Aggregate: o.Aggregation,
+			})
+
+			if err != nil {
+				return err
 			}
-		}
-		tbl.Print()
+			summary.DisplaySummaryOutput(sumResp, o.RevDNSLookup, o.Type)
 
-		//Print List of Network Connection
-		fmt.Println("\nList of Network connections (" + fmt.Sprint(len(res.ListOfNetwork)) + ") :\n")
-		tbl = Heading("SOURCE", "Protocol", "COUNT", "LAST UPDATED TIME", "STATUS")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, network := range res.ListOfNetwork {
-			for _, source := range network.ListOfDestination {
-				tbl.AddRow(network.Source, source.Destination, source.Count, time.Unix(source.LastUpdatedTime, 0).Format("1-02-2006 15:04:05"), strings.ToUpper(source.Status))
-			}
 		}
-		tbl.Print()
-
-		//Print Ingress Connections
-		fmt.Printf("\nIngress Connections :\n\n")
-		tbl = Heading("DESTINATION LABEL", "DESTINATION NAMESPACE", "PROTOCOL", "PORT", "COUNT", "LAST UPDATED TIME", "STATUS")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, ingress := range res.Ingress {
-			tbl.AddRow(ingress.DestinationLabels, ingress.DestinationNamespace, ingress.Protocol, ingress.Port, ingress.Count, time.Unix(ingress.LastUpdatedTime, 0).Format("1-02-2006 15:04:05"), ingress.Status)
-		}
-		tbl.Print()
-
-		//Print Egress Connections
-		fmt.Printf("\nEgress Connections : \n\n")
-		tbl = Heading("DESTINATION LABEL", "DESTINATION NAMESPACE", "PROTOCOL", "PORT", "COUNT", "LAST UPDATED TIME", "STATUS")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, egress := range res.Egress {
-			tbl.AddRow(egress.DestinationLabels, egress.DestinationNamespace, egress.Protocol, egress.Port, egress.Count, time.Unix(egress.LastUpdatedTime, 0).Format("1-02-2006 15:04:05"), egress.Status)
-		}
-		tbl.Print()
-
-		//Print System Incoming connections
-		fmt.Println("\nList of Incoming server connections (" + fmt.Sprint(len(res.InServerConn)) + ") :\n")
-		tbl = Heading("ADDRESS-FAMILY", "PATH")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, inConn := range res.InServerConn {
-			tbl.AddRow(inConn.AddressFamily, inConn.Path)
-		}
-		tbl.Print()
-
-		//Print System Outgoing connections
-		fmt.Println("\nList of Outgoing server connections (" + fmt.Sprint(len(res.OutServerConn)) + ") :\n")
-		tbl = Heading("ADDRESS-FAMILY", "PATH")
-		tbl.WithHeaderFormatter(headerFmt)
-		for _, outConn := range res.OutServerConn {
-			tbl.AddRow(outConn.AddressFamily, outConn.Path)
-		}
-		tbl.Print()
-
 	}
 	return nil
 }
